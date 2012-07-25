@@ -15,7 +15,7 @@ from flask import request, session, json, redirect
 from werkzeug import url_decode, url_encode, url_quote, \
      parse_options_header, Headers
 import oauth2
-
+import certifi
 
 _etree = None
 def get_etree():
@@ -96,8 +96,7 @@ class OAuthClient(oauth2.Client):
             params['oauth_callback'] = callback
         req = oauth2.Request.from_consumer_and_token(
             self.consumer, token=self.token,
-            http_method='POST', http_url=uri, parameters=params,
-            is_form_encoded=True)
+            http_method='POST', http_url=uri, parameters=params)
         req.sign_request(self.method, self.consumer, self.token)
         body = req.to_postdata()
         headers = {
@@ -162,8 +161,6 @@ class OAuthRemoteApp(object):
                                  to forward to the request token URL
                                  or authorize URL depending on oauth
                                  version.
-    :param access_token_params: an option diction of parameters to forward to
-                                the access token URL
     :param access_token_method: the HTTP method that should be used
                                 for the access_token_url.  Defaults
                                 to ``'GET'``.
@@ -174,7 +171,6 @@ class OAuthRemoteApp(object):
                  access_token_url, authorize_url,
                  consumer_key, consumer_secret,
                  request_token_params=None,
-                 access_token_params=None,
                  access_token_method='GET'):
         self.oauth = oauth
         #: the `base_url` all URLs are joined with.
@@ -187,11 +183,11 @@ class OAuthRemoteApp(object):
         self.consumer_secret = consumer_secret
         self.tokengetter_func = None
         self.request_token_params = request_token_params or {}
-        self.access_token_params = access_token_params or {}
         self.access_token_method = access_token_method
         self._consumer = oauth2.Consumer(self.consumer_key,
                                          self.consumer_secret)
         self._client = OAuthClient(self._consumer)
+        self._client.ca_certs = certifi.where()
 
     def get(self, *args, **kwargs):
         """Sends a ``GET`` request.  Accepts the same parameters as
@@ -226,9 +222,11 @@ class OAuthRemoteApp(object):
         Usually you don't have to do that but use the :meth:`request`
         method instead.
         """
-        return oauth2.Client(self._consumer, self.get_request_token())
+        client = oauth2.Client(self._consumer, self.get_request_token())
+        client.ca_certs = certifi.where()
+        return client
 
-    def request(self, url, data="", headers=None, format='urlencoded',
+    def request(self, url, data=None, headers=None, format='urlencoded',
                 method='GET', content_type=None):
         """Sends a request to the remote server with OAuth tokens attached.
         The `url` is joined with :attr:`base_url` if the URL is relative.
@@ -254,9 +252,9 @@ class OAuthRemoteApp(object):
         url = self.expand_url(url)
         if method == 'GET':
             assert format == 'urlencoded'
-            if not data:
+            if data is not None:
                 url = add_query(url, data)
-                data = ""
+                data = None
         else:
             if content_type is None:
                 data, content_type = encode_request_data(data, format)
@@ -354,17 +352,8 @@ class OAuthRemoteApp(object):
             'client_secret':    self.consumer_secret,
             'redirect_uri':     session.get(self.name + '_oauthredir')
         }
-        remote_args.update(self.access_token_params)
-        if self.access_token_method == 'POST':
-            resp, content = self._client.request(self.access_token_url,
-                                                 self.access_token_method,
-                                                 url_encode(remote_args))
-        elif self.access_token_method == 'GET':
-            url = add_query(self.expand_url(self.access_token_url), remote_args)
-            resp, content = self._client.request(url, self.access_token_method)
-        else:
-            raise OAuthException('Unsupported access_token_method: ' +
-                                 self.access_token_method)
+        url = add_query(self.expand_url(self.access_token_url), remote_args)
+        resp, content = self._client.request(url, self.access_token_method)
         data = parse_response(resp, content)
         if resp['status'] != '200':
             raise OAuthException('Invalid response from ' + self.name, data)
